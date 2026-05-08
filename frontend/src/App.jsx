@@ -18,7 +18,7 @@ import {
   Cpu
 } from 'lucide-react';
 
-const API_URL = 'http://localhost:8000';
+const API_URL = window.location.hostname === 'localhost' ? 'http://localhost:8000' : '/api';
 
 function App() {
   const [selectedFile, setSelectedFile] = useState(null);
