@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+
+# Models
+*.h5
+*.h5/
+
+# Dataset
+dataset/
+train/
+val/
+test/
+
+# Node
+node_modules/
+dist/
+.DS_Store
+
+# React
+frontend/node_modules/
+frontend/dist/
+frontend/.env

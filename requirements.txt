@@ -1,0 +1,12 @@
+tensorflow>=2.15.0
+keras>=2.15.0
+fastapi
+uvicorn
+python-multipart
+numpy
+pillow
+opencv-python
+matplotlib
+scikit-learn
+pandas
+axios
