@@ -72,6 +72,9 @@ def apply_heatmap(img_path_or_array, heatmap, intensity=0.8, res=224):
     _, buffer = cv2.imencode('.png', cv2.cvtColor(superimposed_img, cv2.COLOR_BGR2RGB))
     return base64.b64encode(buffer).decode('utf-8')
 
+# 11. ENSURE PREDICTION PIPELINE MATCHES TRAINING
+CLASS_NAMES = ["Normal", "Pneumonia", "Tuberculosis"]
+
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     if model is None:
@@ -82,31 +85,25 @@ async def predict(file: UploadFile = File(...)):
         nparr = np.frombuffer(contents, np.uint8)
         img_raw = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
-        # 1. Standardize to Grayscale then back to 3-channel (Medical Standard)
-        gray = cv2.cvtColor(img_raw, cv2.COLOR_BGR2GRAY)
+        # 5. VERIFY IMAGE PREPROCESSING (Match Training)
+        img_rgb = cv2.cvtColor(img_raw, cv2.COLOR_BGR2RGB)
+        img_resized = cv2.resize(img_rgb, (IMG_SIZE, IMG_SIZE), interpolation=cv2.INTER_AREA)
         
-        # 2. Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
-        # This is the gold standard for enhancing X-ray features
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        equalized = clahe.apply(gray)
-        
-        # 3. Noise Reduction (Bilateral Filter preserves edges)
-        denoised = cv2.bilateralFilter(equalized, 9, 75, 75)
-        
-        # 4. Prepare for Model
-        img_standardized = cv2.cvtColor(denoised, cv2.COLOR_GRAY2RGB)
-        img_resized = cv2.resize(img_standardized, (IMG_SIZE, IMG_SIZE), interpolation=cv2.INTER_CUBIC)
-        
-        img_array_exp = np.expand_dims(img_resized, axis=0) / 255.0
+        # Normalization: image = image / 255.0
+        img_array_exp = np.expand_dims(img_resized, axis=0).astype(np.float32) / 255.0
         
         # Prediction
         preds = model.predict(img_array_exp)
+        
+        # 6. IMPROVE PREDICTION DEBUGGING (Print raw probabilities)
+        print("\n--- Raw Prediction Probabilities ---")
+        for i, name in enumerate(CLASS_NAMES):
+            print(f"{name}: {preds[0][i]:.4f}")
+            
         idx = np.argmax(preds[0])
         
-        # Find last conv layer for Grad-CAM
+        # Generate Bio-marker Heatmap (Grad-CAM)
         last_conv_layer = "top_activation"
-        
-        # Generate Bio-marker Heatmap
         heatmap = get_gradcam_heatmap(model, img_array_exp, last_conv_layer, idx)
         heatmap_base64 = apply_heatmap(img_resized, heatmap)
 
@@ -118,6 +115,7 @@ async def predict(file: UploadFile = File(...)):
         }
 
     except Exception as e:
+        print(f"Prediction Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
