@@ -53,8 +53,48 @@ def create_model(num_classes):
                   metrics=['accuracy'])
     return model, base_model
 
+import cv2
+
+def medical_preprocessing(img):
+    # Convert to grayscale for CLAHE then back to RGB
+    img = img.astype(np.uint8)
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    equalized = clahe.apply(gray)
+    # Return as 3-channel RGB for EfficientNet
+    return cv2.cvtColor(equalized, cv2.COLOR_GRAY2RGB).astype(np.float32)
+
 def train():
-    # ... [generator code remains same] ...
+    # Data Augmentation with Medical Preprocessing
+    train_datagen = ImageDataGenerator(
+        preprocessing_function=medical_preprocessing,
+        rotation_range=15,
+        width_shift_range=0.1,
+        height_shift_range=0.1,
+        shear_range=0.1,
+        zoom_range=0.1,
+        horizontal_flip=True,
+        fill_mode='nearest',
+        validation_split=0.2
+    )
+
+    train_generator = train_datagen.flow_from_directory(
+        DATASET_DIR,
+        target_size=(IMG_SIZE, IMG_SIZE),
+        batch_size=BATCH_SIZE,
+        class_mode='categorical',
+        subset='training'
+    )
+
+    val_generator = train_datagen.flow_from_directory(
+        DATASET_DIR,
+        target_size=(IMG_SIZE, IMG_SIZE),
+        batch_size=BATCH_SIZE,
+        class_mode='categorical',
+        subset='validation'
+    )
+
+    num_classes = len(train_generator.class_indices)
     
     # Build Model
     model, base_model = create_model(num_classes)

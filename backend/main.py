@@ -79,22 +79,36 @@ async def predict(file: UploadFile = File(...)):
     
     try:
         contents = await file.read()
-        img = Image.open(io.BytesIO(contents)).convert('RGB')
-        img_resized = img.resize((IMG_SIZE, IMG_SIZE))
+        nparr = np.frombuffer(contents, np.uint8)
+        img_raw = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
-        img_array = image.img_to_array(img_resized)
-        img_array_exp = np.expand_dims(img_array, axis=0) / 255.0
+        # 1. Standardize to Grayscale then back to 3-channel (Medical Standard)
+        gray = cv2.cvtColor(img_raw, cv2.COLOR_BGR2GRAY)
+        
+        # 2. Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+        # This is the gold standard for enhancing X-ray features
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        equalized = clahe.apply(gray)
+        
+        # 3. Noise Reduction (Bilateral Filter preserves edges)
+        denoised = cv2.bilateralFilter(equalized, 9, 75, 75)
+        
+        # 4. Prepare for Model
+        img_standardized = cv2.cvtColor(denoised, cv2.COLOR_GRAY2RGB)
+        img_resized = cv2.resize(img_standardized, (IMG_SIZE, IMG_SIZE), interpolation=cv2.INTER_CUBIC)
+        
+        img_array_exp = np.expand_dims(img_resized, axis=0) / 255.0
         
         # Prediction
         preds = model.predict(img_array_exp)
         idx = np.argmax(preds[0])
         
-        # Find last conv layer for EfficientNetB0 (usually 'top_activation')
+        # Find last conv layer for Grad-CAM
         last_conv_layer = "top_activation"
         
         # Generate Bio-marker Heatmap
         heatmap = get_gradcam_heatmap(model, img_array_exp, last_conv_layer, idx)
-        heatmap_base64 = apply_heatmap(img_array, heatmap)
+        heatmap_base64 = apply_heatmap(img_resized, heatmap)
 
         return {
             "prediction": CLASS_NAMES[idx],
