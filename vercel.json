@@ -5,14 +5,9 @@
       "src": "package.json",
       "use": "@vercel/static-build",
       "config": { "distDir": "frontend/dist" }
-    },
-    {
-      "src": "api/index.py",
-      "use": "@vercel/python"
     }
   ],
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/index.py" },
     { "source": "/(.*)", "destination": "/$1" }
   ]
 }

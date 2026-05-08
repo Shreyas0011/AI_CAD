@@ -22,7 +22,7 @@ app.add_middleware(
 )
 
 # Constants
-MODEL_PATH = "../lung_model.h5"
+MODEL_PATH = os.getenv("MODEL_PATH", "../lung_model.h5")
 IMG_SIZE = 224
 CLASS_NAMES = ["Normal", "Pneumonia", "Tuberculosis"]
 
