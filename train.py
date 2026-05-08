@@ -1,52 +1,68 @@
 import os
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.applications import EfficientNetB0
+from tensorflow.keras.preprocessing.image import ImageDataGenerator, load_img, img_to_array
+from tensorflow.keras.applications import EfficientNetB3
 from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout, BatchNormalization
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.utils import class_weight
 import matplotlib.pyplot as plt
 import seaborn as sns
+from PIL import Image
 
-# 1. CLASS LABEL CONSISTENCY
+# 14. VERIFY PREPROCESSING CONSISTENCY
 CLASS_NAMES = ["Normal", "Pneumonia", "Tuberculosis"]
-IMG_SIZE = 224
-BATCH_SIZE = 32
-EPOCHS = 25
+IMG_SIZE = 300 # 2. INCREASE IMAGE RESOLUTION
+BATCH_SIZE = 16 # Reduced batch size for B3 and higher resolution
+EPOCHS = 50 # 3. TRAIN LONGER
 DATASET_DIR = 'dataset'
 MODEL_SAVE_PATH = 'lung_model.h5'
 
-def check_dataset_balance():
-    print("\n--- 10. VERIFY DATASET BALANCE ---")
-    counts = {}
+def verify_dataset_quality():
+    print("\n--- 9. VERIFY DATASET QUALITY ---")
+    corrupted = 0
+    duplicates = set()
+    
     for cls in CLASS_NAMES:
         path = os.path.join(DATASET_DIR, cls)
-        if os.path.exists(path):
-            count = len(os.listdir(path))
-            counts[cls] = count
-            print(f"{cls}: {count} images")
-        else:
-            print(f"Warning: Directory {path} not found")
+        if not os.path.exists(path): continue
+        
+        files = os.listdir(path)
+        for f in files:
+            f_path = os.path.join(path, f)
+            # Check for corrupted files
+            try:
+                img = Image.open(f_path)
+                img.verify()
+                
+                # Check for duplicates (Simple size/name check for demo)
+                file_sig = (os.path.getsize(f_path), f)
+                if file_sig in duplicates:
+                    print(f"Warning: Potential duplicate detected: {f}")
+                duplicates.add(file_sig)
+                
+            except Exception as e:
+                print(f"Warning: Corrupted file detected: {f_path} ({e})")
+                corrupted += 1
     
-    if len(counts) > 0:
-        max_c = max(counts.values())
-        min_c = min(counts.values())
-        if min_c < max_c * 0.5:
-            print("!!! WARNING: Dataset is heavily imbalanced. Consider oversampling. !!!")
+    if corrupted > 0:
+        print(f"!!! Warning: {corrupted} corrupted files detected !!!")
 
 def get_data_generators():
-    # 4. IMPROVE DATA AUGMENTATION & 5. NORMALIZATION
+    # 5. ADD MORE ADVANCED AUGMENTATION
     train_datagen = ImageDataGenerator(
-        rescale=1./255, # Normalization
-        rotation_range=15, # RandomRotation(0.15)
-        zoom_range=0.15,   # RandomZoom(0.15)
-        horizontal_flip=True, # RandomFlip
-        width_shift_range=0.1,
-        height_shift_range=0.1,
-        brightness_range=[0.9, 1.1], # RandomContrast equivalent
+        rescale=1./255,
+        rotation_range=20, # RandomRotation(0.2)
+        zoom_range=0.2,    # RandomZoom(0.2)
+        width_shift_range=0.2, # RandomTranslation
+        height_shift_range=0.2,
+        shear_range=0.15,
+        horizontal_flip=True,
+        brightness_range=[0.8, 1.2], # RandomContrast(0.2)
+        fill_mode='nearest',
         validation_split=0.2
     )
 
@@ -57,7 +73,7 @@ def get_data_generators():
         target_size=(IMG_SIZE, IMG_SIZE),
         batch_size=BATCH_SIZE,
         class_mode='categorical',
-        classes=CLASS_NAMES, # ENSURE CONSISTENT ORDER
+        classes=CLASS_NAMES,
         subset='training'
     )
 
@@ -70,94 +86,112 @@ def get_data_generators():
         subset='validation'
     )
 
-    # Note: Test set should be separate, but here we use a subset or the same validation for evaluation
     return train_generator, val_generator
 
-def build_model(num_classes):
-    # 3. ENABLE FINE-TUNING - Phase 1: Frozen Base
-    base_model = EfficientNetB0(weights='imagenet', include_top=False, input_shape=(IMG_SIZE, IMG_SIZE, 3))
-    base_model.trainable = False 
+def calculate_class_weights(train_generator):
+    # 4. USE CLASS WEIGHTS
+    print("\n--- 10. DISPLAY CLASS DISTRIBUTION ---")
+    labels = train_generator.classes
+    class_indices = train_generator.class_indices
+    unique, counts = np.unique(labels, return_counts=True)
+    
+    for i, count in zip(unique, counts):
+        print(f"{CLASS_NAMES[i]}: {count} images")
+
+    weights = class_weight.compute_class_weight(
+        class_weight='balanced',
+        classes=np.unique(labels),
+        y=labels
+    )
+    return dict(enumerate(weights))
+
+def build_advanced_model(num_classes):
+    # 1. USE A STRONGER MODEL (EfficientNetB3)
+    base_model = EfficientNetB3(weights='imagenet', include_top=False, input_shape=(IMG_SIZE, IMG_SIZE, 3))
+    base_model.trainable = False
 
     x = base_model.output
     x = GlobalAveragePooling2D()(x)
+    
+    # 6. ADD BATCH NORMALIZATION
     x = BatchNormalization()(x)
+    x = Dense(1024, activation='relu')(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.5)(x)
+    
     x = Dense(512, activation='relu')(x)
-    x = Dropout(0.4)(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.3)(x)
+    
     predictions = Dense(num_classes, activation='softmax')(x)
 
     model = Model(inputs=base_model.input, outputs=predictions)
     model.compile(optimizer=Adam(1e-3), loss='categorical_crossentropy', metrics=['accuracy'])
     return model, base_model
 
-def plot_confusion_matrix(model, val_generator):
-    # 7. ADD CONFUSION MATRIX
-    print("\n--- Generating Confusion Matrix ---")
+def evaluate_model(model, val_generator):
+    # 11. GENERATE CONFUSION MATRIX & REPORT
+    print("\n--- 11. GENERATE CONFUSION MATRIX ---")
     val_generator.reset()
     Y_pred = model.predict(val_generator)
     y_pred = np.argmax(Y_pred, axis=1)
     y_true = val_generator.classes
 
+    # Classification Report
+    print(classification_report(y_true, y_pred, target_names=CLASS_NAMES))
+    
+    # Confusion Matrix
     cm = confusion_matrix(y_true, y_pred)
     plt.figure(figsize=(10, 8))
-    sns.heatmap(cm, annot=True, fmt='d', xticklabels=CLASS_NAMES, yticklabels=CLASS_NAMES)
-    plt.title('Confusion Matrix')
+    sns.heatmap(cm, annot=True, fmt='d', xticklabels=CLASS_NAMES, yticklabels=CLASS_NAMES, cmap='Blues')
+    plt.title('V2 Advanced Confusion Matrix (Normal vs TB focus)')
     plt.ylabel('Actual')
     plt.xlabel('Predicted')
-    plt.savefig('confusion_matrix.png')
-    print("Confusion matrix saved as confusion_matrix.png")
-    
-    print("\nClassification Report:")
-    print(classification_report(y_true, y_pred, target_names=CLASS_NAMES))
+    plt.savefig('confusion_matrix_v2.png')
+    print("Confusion matrix saved as confusion_matrix_v2.png")
 
-def train_pipeline():
-    check_dataset_balance()
+def train_v2():
+    verify_dataset_quality()
     train_gen, val_gen = get_data_generators()
-    num_classes = len(CLASS_NAMES)
+    class_weights = calculate_class_weights(train_gen)
     
-    print(f"\n--- 1. VERIFY CLASS LABEL CONSISTENCY ---")
-    print(f"Class Indices: {train_gen.class_indices}")
+    model, base_model = build_advanced_model(len(CLASS_NAMES))
 
-    model, base_model = build_model(num_classes)
+    # 3. & 7. Callbacks
+    callbacks = [
+        EarlyStopping(patience=7, restore_best_weights=True, monitor='val_accuracy'),
+        ModelCheckpoint(MODEL_SAVE_PATH, save_best_only=True, monitor='val_accuracy'),
+        ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=3, min_lr=1e-8)
+    ]
 
-    # 2. IMPROVE MODEL TRAINING - Callbacks
-    early_stop = EarlyStopping(patience=5, restore_best_weights=True, monitor='val_accuracy')
-    checkpoint = ModelCheckpoint(MODEL_SAVE_PATH, save_best_only=True, monitor='val_accuracy')
-
-    print("\n--- Phase 1: Training Head ---")
-    history1 = model.fit(
+    print("\n--- Phase 1: Transfer Learning (EfficientNetB3) ---")
+    model.fit(
         train_gen,
-        epochs=10,
+        epochs=15,
         validation_data=val_gen,
-        callbacks=[early_stop, checkpoint]
+        class_weight=class_weights,
+        callbacks=callbacks
     )
 
-    # 3. ENABLE FINE-TUNING - Phase 2: Unfreeze
-    print("\n--- Phase 2: Fine-Tuning ---")
+    # 8. IMPROVE FINE-TUNING
+    print("\n--- Phase 2: Ultra Fine-Tuning (Unfreeze Entire Network) ---")
     base_model.trainable = True
-    # Freeze only early layers (first 100)
-    for layer in base_model.layers[:100]:
+    # Freeze only very earliest layers
+    for layer in base_model.layers[:50]:
         layer.trainable = False
+        
+    model.compile(optimizer=Adam(1e-6), loss='categorical_crossentropy', metrics=['accuracy'])
     
-    model.compile(optimizer=Adam(1e-5), loss='categorical_crossentropy', metrics=['accuracy'])
-    
-    history2 = model.fit(
+    history = model.fit(
         train_gen,
-        epochs=EPOCHS, # 25 epochs total for fine-tuning
+        epochs=EPOCHS,
         validation_data=val_gen,
-        callbacks=[early_stop, checkpoint]
+        class_weight=class_weights,
+        callbacks=callbacks
     )
 
-    # 2. PRINT ACCURACIES
-    train_acc = history2.history['accuracy'][-1]
-    val_acc = history2.history['val_accuracy'][-1]
-    print(f"\nFinal Training Accuracy: {train_acc:.4f}")
-    print(f"Final Validation Accuracy: {val_acc:.4f}")
-
-    # 7. EVALUATION
-    plot_confusion_matrix(model, val_gen)
-    
-    print(f"\n--- 8. SAVE BEST MODEL ---")
-    print(f"Best model saved to {MODEL_SAVE_PATH}")
+    print("\n--- Training Complete ---")
+    evaluate_model(model, val_gen)
 
 if __name__ == "__main__":
-    train_pipeline()
+    train_v2()
