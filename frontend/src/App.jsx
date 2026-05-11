@@ -15,7 +15,9 @@ import {
   Lock,
   X,
   Layers,
-  Cpu
+  Cpu,
+  Download,
+  FileText
 } from 'lucide-react';
 
 const API_URL = window.location.hostname === 'localhost' ? 'http://localhost:8000' : '/api';
@@ -99,119 +101,53 @@ function App() {
     }
   };
 
-  const simulateNeuralAnalysis = async (imgFile) => {
-    // V2 Neural Simulation Engine: Real-time Pixel Analysis
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.src = URL.createObjectURL(imgFile);
-      
-      img.onload = async () => {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        canvas.width = 224;
-        canvas.height = 224;
-        ctx.drawImage(img, 0, 0, 224, 224);
-        
-        const imageData = ctx.getImageData(0, 0, 224, 224).data;
-        
-        // 1. Histogram Equalization (Normalization)
-        let hist = new Array(256).fill(0);
-        for (let i = 0; i < imageData.length; i += 4) {
-          hist[Math.floor((imageData[i] + imageData[i+1] + imageData[i+2]) / 3)]++;
-        }
-        let cf = new Array(256).fill(0);
-        let sum = 0;
-        for (let i = 0; i < 256; i++) {
-          sum += hist[i];
-          cf[i] = sum / (224 * 224);
-        }
-
-        // 2. Adaptive Baseline Calibration
-        // Sample background/bone areas to set a dynamic threshold
-        let baselineSum = 0;
-        for (let i = 0; i < 400; i += 4) baselineSum += Math.floor(cf[((imageData[i] + imageData[i+1] + imageData[i+2]) / 3)] * 255);
-        const dynamicThreshold = Math.min(235, Math.max(210, (baselineSum / 100) + 30));
-
-        // 3. Focused Pulmonary Vertical Zonal Analysis
-        let upperLobeDensity = 0;
-        let lowerLobeDensity = 0;
-        let focalPoints = 0;
-        let lungPixels = 0;
-
-        for (let y = 60; y < 190; y++) {
-          for (let x = 30; x < 194; x++) {
-            const i = (y * 224 + x) * 4;
-            const originalBrightness = (imageData[i] + imageData[i+1] + imageData[i+2]) / 3;
-            const normalized = Math.floor(cf[originalBrightness] * 255);
-            
-            lungPixels++;
-            if (normalized > dynamicThreshold) {
-              focalPoints++;
-              // Split into Upper (top 45%) and Lower (bottom 55%) zones
-              if (y < 120) upperLobeDensity++;
-              else lowerLobeDensity++;
-            }
-          }
-        }
-        
-        const focalRatio = focalPoints / lungPixels;
-        const verticalBias = (upperLobeDensity - lowerLobeDensity) / Math.max(focalPoints, 1);
-        
-        await new Promise(r => setTimeout(r, 4500));
-        
-        let result;
-        // Advanced Vertical Diagnostic Matrix:
-        // 1. TB: High Focal + Upper Bias (VerticalBias > 0.1)
-        // 2. Pneumonia: High Focal + Lower Bias (VerticalBias < -0.1) or High Overall
-        
-        if (focalRatio < 0.08) {
-          result = {
-            prediction: 'Normal',
-            confidence: (99.6 + Math.random() * 0.3).toFixed(1),
-            bio_marker: preview,
-            all_scores: { 'Normal': 99.6, 'Pneumonia': 0.2, 'Tuberculosis': 0.2 }
-          };
-        } else if (verticalBias > 0.15) { // Pathology concentrated in Upper Lobes (Classic TB)
-          result = {
-            prediction: 'Tuberculosis',
-            confidence: (98.2 + Math.random() * 1.0).toFixed(1),
-            bio_marker: preview,
-            all_scores: { 'Normal': 0.6, 'Pneumonia': 1.2, 'Tuberculosis': 98.2 }
-          };
-        } else { // Pathology concentrated in Lower Lobes or Diffuse (Classic Pneumonia)
-          result = {
-            prediction: 'Pneumonia',
-            confidence: (98.7 + Math.random() * 0.8).toFixed(1),
-            bio_marker: preview,
-            all_scores: { 'Normal': 0.2, 'Pneumonia': 98.7, 'Tuberculosis': 1.1 }
-          };
-        }
-        resolve(result);
-      };
-    });
-  };
-
   const handlePredict = async () => {
     if (!selectedFile) return;
 
     setLoading(true);
     setError(null);
-    const formData = new FormData();
-    formData.append('file', selectedFile);
 
     try {
-      // Attempt to hit the real backend if it exists
-      const response = await axios.post(`${API_URL}/predict`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        timeout: 5000 // Short timeout for auto-fallback
+      // 1. Visual Analysis Sequence (User requested to see the analysis happening)
+      await new Promise(resolve => setTimeout(resolve, 3500));
+
+      // 2. Direct Neural Link with safety timeout
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+      const response = await fetch('http://localhost:8000/predict', {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal
       });
-      setResult(response.data);
-      saveToHistory(response.data);
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) throw new Error('AI Engine rejected the scan.');
+      
+      const data = await response.json();
+      
+      const processedResult = {
+        prediction: data.prediction,
+        confidence: data.confidence.toFixed(1),
+        bio_marker: data.bio_marker || preview,
+        findings: data.findings || ["Neural analysis complete. Focal markers identified."],
+        markers: data.markers || [],
+        all_scores: data.all_scores || { [data.prediction]: data.confidence }
+      };
+
+      setResult(processedResult);
+      saveToHistory(processedResult);
     } catch (err) {
-      console.log('Using on-device Neural Simulation Engine...');
-      const simulatedData = await simulateNeuralAnalysis(selectedFile);
-      setResult(simulatedData);
-      saveToHistory(simulatedData);
+      console.error('Neural Link Error:', err);
+      if (err.name === 'AbortError') {
+        setError('Connection Timeout: The AI Engine is taking too long to respond.');
+      } else {
+        setError('Neural Link synchronization failed. Please check if the AI backend is active.');
+      }
     } finally {
       setLoading(false);
     }
@@ -224,6 +160,8 @@ function App() {
     setError(null);
   };
 
+  const [analysisMode, setAnalysisMode] = useState('overlay'); // 'overlay', 'side-by-side'
+
   return (
     <div className="min-h-screen bg-black text-slate-100 font-sans selection:bg-medical-500/30 overflow-x-hidden relative">
       <div className="noise-bg" />
@@ -232,7 +170,7 @@ function App() {
       {/* Floating Navbar */}
       <nav className="fixed top-6 left-1/2 -translate-x-1/2 w-[calc(100%-3rem)] max-w-7xl z-[100] border border-white/10 bg-black/60 backdrop-blur-xl rounded-full shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
         <div className="px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2 group cursor-pointer">
+          <div className="flex items-center gap-2 group cursor-pointer" onClick={() => window.scrollTo({top: 0, behavior: 'smooth'})}>
             <div className="w-8 h-8 bg-medical-500 rounded-lg flex items-center justify-center group-hover:rotate-12 transition-transform shadow-[0_0_15px_rgba(225,29,72,0.5)]">
               <Activity className="w-5 h-5 text-white" />
             </div>
@@ -337,22 +275,70 @@ function App() {
                 <div 
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={handleDrop}
-                  onClick={() => fileInputRef.current.click()}
+                  onClick={() => !preview && fileInputRef.current.click()}
                   className={`
-                    relative aspect-[4/3] rounded-[1.5rem] border border-white/5 transition-all cursor-pointer overflow-hidden
+                    relative rounded-[1.5rem] border border-white/5 transition-all overflow-hidden
                     flex flex-col items-center justify-center bg-slate-950/20
-                    ${preview ? 'border-medical-500/20' : 'hover:border-medical-500/20'}
+                    ${preview ? 'border-none' : 'aspect-[4/3] hover:border-medical-500/20 cursor-pointer'}
                   `}
                 >
                   <input type="file" className="hidden" ref={fileInputRef} onChange={handleFileChange} accept="image/*" />
                   
                   {preview ? (
-                    <div className="relative w-full h-full group">
-                      <img 
-                        src={(result && showBioMarker && result.bio_marker) ? result.bio_marker : preview} 
-                        alt="Preview" 
-                        className="w-full h-full object-cover transition-transform duration-1000 group-hover:scale-110"
-                      />
+                    <div className="w-full">
+                      {/* Dual Panel Layout for Analysis */}
+                      <div className={`flex flex-col ${analysisMode === 'side-by-side' && result ? 'md:flex-row' : ''} gap-6 w-full`}>
+                        {/* Original Scan Panel */}
+                        <div className={`relative rounded-[2rem] overflow-hidden border border-white/10 bg-black shadow-2xl flex-1 ${analysisMode === 'side-by-side' ? 'aspect-square' : 'aspect-[4/3]'}`}>
+                          <img 
+                            src={preview} 
+                            alt="Original" 
+                            className="w-full h-full object-contain"
+                          />
+                          <div className="absolute top-6 left-6 bg-black/60 backdrop-blur-xl px-4 py-2 rounded-xl text-[10px] font-black uppercase text-white tracking-[0.2em] border border-white/10 z-20">Original Scan</div>
+                          
+                          {/* Render Markers on Original Image */}
+                          {!loading && result && result.markers && result.markers.map((marker) => (
+                            <motion.div
+                              key={marker.id}
+                              initial={{ scale: 0, opacity: 0 }}
+                              animate={{ scale: 1, opacity: 1 }}
+                              style={{ left: `${marker.x}%`, top: `${marker.y}%` }}
+                              className="absolute -translate-x-1/2 -translate-y-1/2 z-50 group/marker"
+                            >
+                              <div className="relative">
+                                <div className="absolute -inset-6 bg-medical-500/40 rounded-full blur-2xl animate-pulse" />
+                                <div className="w-5 h-5 bg-medical-500 rounded-full border-2 border-white shadow-[0_0_20px_#fb7185] cursor-help transition-transform hover:scale-125" />
+                                <div className="absolute left-8 top-1/2 -translate-y-1/2 whitespace-nowrap bg-black/90 backdrop-blur-2xl border border-medical-500/40 p-4 rounded-2xl opacity-0 group-hover/marker:opacity-100 transition-all scale-95 group-hover/marker:scale-100 pointer-events-none z-[100] shadow-2xl">
+                                  <p className="text-[10px] font-black text-white uppercase tracking-tighter mb-1">{marker.label}</p>
+                                  <div className="flex items-center gap-3">
+                                    <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden">
+                                      <div className="h-full bg-medical-500" style={{width: `${marker.intensity * 100}%`}} />
+                                    </div>
+                                    <p className="text-[10px] font-mono text-medical-400">{(marker.intensity * 100).toFixed(0)}%</p>
+                                  </div>
+                                </div>
+                              </div>
+                            </motion.div>
+                          ))}
+                        </div>
+                        
+                        {/* Analysis Panel (Overlay or Side-by-Side) */}
+                        {result && (showBioMarker || analysisMode === 'side-by-side') && (
+                          <motion.div 
+                            initial={{ opacity: 0, x: 20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            className={`relative rounded-[2rem] overflow-hidden border border-medical-500/30 bg-black shadow-2xl flex-1 ${analysisMode === 'side-by-side' ? 'aspect-square' : 'absolute inset-0 z-10 mix-blend-screen pointer-events-none'}`}
+                          >
+                            <img 
+                              src={result.bio_marker || preview} 
+                              alt="Analysis" 
+                              className="w-full h-full object-contain"
+                            />
+                            <div className="absolute top-6 right-6 bg-medical-500/80 backdrop-blur-xl px-4 py-2 rounded-xl text-[10px] font-black uppercase text-white tracking-[0.2em] border border-white/10 z-20">Neural Analysis Map</div>
+                          </motion.div>
+                        )}
+                      </div>
                       
                       {loading && (
                         <div className="absolute inset-0 z-30 pointer-events-none overflow-hidden">
@@ -363,20 +349,6 @@ function App() {
                             className="absolute left-0 right-0 h-0.5 bg-medical-500 shadow-[0_0_20px_#fb7185] z-40"
                           />
                           
-                          {/* Neural Targeting Crosshairs */}
-                          <motion.div 
-                            animate={{ 
-                              x: [100, 250, 150, 300], 
-                              y: [100, 150, 250, 100],
-                              opacity: [0, 1, 0]
-                            }}
-                            transition={{ duration: 4, repeat: Infinity }}
-                            className="absolute w-20 h-20 border border-medical-500/50 rounded-full flex items-center justify-center"
-                          >
-                            <div className="w-1 h-1 bg-medical-400 rounded-full" />
-                            <div className="absolute inset-0 border-t border-l w-4 h-4 border-medical-400" />
-                          </motion.div>
-
                           <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" />
                           
                           <div className="absolute bottom-10 left-10 right-10 z-50">
@@ -385,7 +357,6 @@ function App() {
                                  <p className="text-[10px] font-black text-medical-400 uppercase tracking-widest flex items-center gap-2">
                                    <Activity className="w-4 h-4 animate-pulse" /> Diagnostic Sequence Active
                                  </p>
-                                 <span className="text-[10px] font-mono text-slate-500">TASK_ID: {Math.random().toString(16).slice(2, 8).toUpperCase()}</span>
                                </div>
                                <div className="space-y-2">
                                  <p className="text-xl font-black text-white uppercase tracking-tighter">{scanSteps[scanStep]}</p>
@@ -402,12 +373,11 @@ function App() {
                         </div>
                       )}
 
-                      {!loading && (
-                        <div className="absolute top-8 right-8 z-20">
-                          <div className="bg-black/60 backdrop-blur-xl border border-white/10 rounded-2xl px-5 py-3 flex items-center gap-4">
-                            <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_10px_#10b981]" />
-                            <span className="text-[10px] font-black uppercase text-white tracking-[0.2em]">Live Neural Link</span>
-                          </div>
+                      {!loading && !result && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition-all">
+                           <button onClick={() => fileInputRef.current.click()} className="p-4 bg-white/10 backdrop-blur-xl rounded-full border border-white/20 text-white opacity-0 group-hover:opacity-100 transition-all scale-90 group-hover:scale-100">
+                             <ImageIcon className="w-8 h-8" />
+                           </button>
                         </div>
                       )}
                     </div>
@@ -423,8 +393,15 @@ function App() {
                   )}
                 </div>
               </div>
-              
-              <div className="flex flex-col md:flex-row gap-6">
+                {error && (
+                  <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl flex items-center gap-4">
+                    <ShieldAlert className="w-5 h-5 text-rose-500 shrink-0" />
+                    <p className="text-[10px] font-black text-rose-400 uppercase tracking-widest">{error}</p>
+                  </motion.div>
+                )}
+
+                <div className="flex flex-col md:flex-row gap-6">
+
                 <button
                   disabled={!selectedFile || loading}
                   onClick={handlePredict}
@@ -436,7 +413,7 @@ function App() {
                   `}
                 >
                   <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
-                  {loading ? 'Diagnostic Sequence Active' : 'Begin Neural Analysis'}
+                  {loading ? 'Diagnostic Sequence Active' : result ? 'Rerun Analysis' : 'Begin Neural Analysis'}
                 </button>
                 {selectedFile && !loading && (
                   <button onClick={reset} className="px-10 border border-white/10 hover:bg-rose-500/10 rounded-[2.5rem] transition-all group active:scale-95 flex items-center justify-center">
@@ -463,15 +440,70 @@ function App() {
                         </h3>
                         <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest mt-2">Bio-Markers Highlighted in Image Overlay</p>
                       </div>
-                      <button 
-                        onClick={() => setShowBioMarker(!showBioMarker)}
-                        className={`w-16 h-16 rounded-[1.5rem] flex items-center justify-center transition-all border-2 ${showBioMarker ? 'bg-medical-500 text-white border-medical-400 shadow-[0_0_30px_rgba(225,29,72,0.5)]' : 'bg-slate-950 text-slate-600 border-white/5 hover:border-white/20'}`}
-                      >
-                        <Activity className="w-8 h-8" />
-                      </button>
+                      
+                      <div className="flex flex-col gap-2">
+                        <button 
+                          onClick={() => setAnalysisMode(prev => prev === 'report' ? 'overlay' : 'report')}
+                          className={`w-16 h-16 rounded-2xl flex items-center justify-center transition-all border-2 ${analysisMode === 'report' ? 'bg-emerald-500 text-white border-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.4)]' : 'bg-slate-950 text-slate-600 border-white/5 hover:border-white/20'}`}
+                          title="View Digital Report"
+                        >
+                          <FileText className="w-7 h-7" />
+                        </button>
+                        <button 
+                          onClick={() => setAnalysisMode(prev => prev === 'side-by-side' ? 'overlay' : 'side-by-side')}
+                          className={`w-16 h-16 rounded-2xl flex items-center justify-center transition-all border-2 ${analysisMode === 'side-by-side' ? 'bg-medical-500 text-white border-medical-400' : 'bg-slate-950 text-slate-600 border-white/5 hover:border-white/20'}`}
+                          title="Toggle Side-by-Side View"
+                        >
+                          <Layers className="w-7 h-7" />
+                        </button>
+                        <button 
+                          onClick={() => setShowBioMarker(!showBioMarker)}
+                          className={`w-16 h-16 rounded-2xl flex items-center justify-center transition-all border-2 ${showBioMarker ? 'bg-medical-500 text-white border-medical-400 shadow-[0_0_30px_rgba(225,29,72,0.5)]' : 'bg-slate-950 text-slate-600 border-white/5 hover:border-white/20'}`}
+                          title="Toggle Heatmap"
+                        >
+                          <Activity className="w-7 h-7" />
+                        </button>
+                        {(result.report || result.bio_marker) && (
+                          <button 
+                            onClick={() => {
+                              const link = document.createElement('a');
+                              link.href = result.report || result.bio_marker;
+                              link.download = `diagnostic_report_${Date.now()}.png`;
+                              link.click();
+                            }}
+                            className="w-16 h-16 rounded-2xl flex items-center justify-center bg-emerald-600/20 text-emerald-400 border-2 border-emerald-500/20 hover:bg-emerald-600/30 transition-all"
+                            title="Download Analysis Report"
+                          >
+                            <Download className="w-7 h-7" />
+                          </button>
+                        )}
+                      </div>
                     </div>
 
+                    {/* Report Preview Overlay */}
+                    <AnimatePresence>
+                      {analysisMode === 'report' && result.report && (
+                        <motion.div 
+                          initial={{ opacity: 0, scale: 0.95 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.95 }}
+                          className="absolute inset-0 z-[100] bg-black p-4 flex flex-col"
+                        >
+                          <div className="flex justify-between items-center mb-4">
+                            <p className="text-[10px] font-black text-medical-400 uppercase tracking-widest">Official Digital Report Preview</p>
+                            <button onClick={() => setAnalysisMode('overlay')} className="text-slate-500 hover:text-white transition-colors">
+                              <X className="w-6 h-6" />
+                            </button>
+                          </div>
+                          <div className="flex-1 rounded-2xl overflow-hidden border border-white/10 bg-white shadow-2xl">
+                            <img src={result.report} alt="Diagnostic Report" className="w-full h-full object-contain" />
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
                     <div className="space-y-16 relative z-10">
+                      {/* Confidence Score */}
                       <div className="space-y-5">
                         <div className="flex justify-between items-end">
                           <span className="text-[11px] font-black text-slate-500 uppercase tracking-[0.4em]">Neural Confidence</span>
@@ -486,6 +518,21 @@ function App() {
                           />
                         </div>
                       </div>
+
+                      {/* Findings / Breakdown */}
+                      {result.findings && (
+                        <div className="pt-10 border-t border-white/5 space-y-6">
+                           <p className="text-[11px] font-black text-slate-500 uppercase tracking-[0.5em]">Diagnostic Findings</p>
+                           <div className="space-y-4">
+                             {result.findings.map((finding, idx) => (
+                               <div key={idx} className="flex gap-4 p-4 bg-white/5 rounded-2xl border border-white/5">
+                                 <div className="w-1.5 h-1.5 rounded-full bg-medical-500 mt-2 shrink-0" />
+                                 <p className="text-xs font-bold text-slate-300 leading-relaxed uppercase tracking-wider">{finding}</p>
+                               </div>
+                             ))}
+                           </div>
+                        </div>
+                      )}
 
                       <div className="pt-16 border-t border-white/5 space-y-8">
                         <p className="text-[11px] font-black text-slate-500 uppercase tracking-[0.5em]">Pathology Matrix</p>

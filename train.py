@@ -1,9 +1,9 @@
 import os
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.preprocessing.image import ImageDataGenerator, load_img, img_to_array
-from tensorflow.keras.applications import EfficientNetB3
-from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout, BatchNormalization
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.applications import MobileNetV3Large
+from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout, BatchNormalization, Concatenate, GlobalMaxPooling2D
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
@@ -11,115 +11,106 @@ from sklearn.metrics import confusion_matrix, classification_report
 from sklearn.utils import class_weight
 import matplotlib.pyplot as plt
 import seaborn as sns
+import cv2
 from PIL import Image
 
-# 14. VERIFY PREPROCESSING CONSISTENCY
-CLASS_NAMES = ["Normal", "Pneumonia", "Tuberculosis"]
-IMG_SIZE = 300 # 2. INCREASE IMAGE RESOLUTION
-BATCH_SIZE = 16 # Reduced batch size for B3 and higher resolution
-EPOCHS = 50 # 3. TRAIN LONGER
-DATASET_DIR = 'dataset'
+# Enable Multi-Core & XLA for Supersonic Speed
+tf.config.optimizer.set_jit(True)
+
+# --- CONFIGURATION ---
+CLASS_NAMES = ["normal", "pneumonia", "tuberculosis"]
+IMG_SIZE = 128 # Supersonic Resolution
+BATCH_SIZE = 128 # Maximum Batching
+EPOCHS = 30
+TRAIN_DIR = r'C:\Users\Shreyas\Downloads\archive\train'
+TEST_DIR  = r'C:\Users\Shreyas\Downloads\archive\test'
 MODEL_SAVE_PATH = 'lung_model.h5'
 
-def verify_dataset_quality():
-    print("\n--- 9. VERIFY DATASET QUALITY ---")
-    corrupted = 0
-    duplicates = set()
+def apply_clahe(img):
+    """Apply Contrast Limited Adaptive Histogram Equalization for X-ray enhancement."""
+    img = np.uint8(img)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     
-    for cls in CLASS_NAMES:
-        path = os.path.join(DATASET_DIR, cls)
-        if not os.path.exists(path): continue
-        
-        files = os.listdir(path)
-        for f in files:
-            f_path = os.path.join(path, f)
-            # Check for corrupted files
-            try:
-                img = Image.open(f_path)
-                img.verify()
-                
-                # Check for duplicates (Simple size/name check for demo)
-                file_sig = (os.path.getsize(f_path), f)
-                if file_sig in duplicates:
-                    print(f"Warning: Potential duplicate detected: {f}")
-                duplicates.add(file_sig)
-                
-            except Exception as e:
-                print(f"Warning: Corrupted file detected: {f_path} ({e})")
-                corrupted += 1
-    
-    if corrupted > 0:
-        print(f"!!! Warning: {corrupted} corrupted files detected !!!")
+    # Check if image is grayscale or RGB
+    if len(img.shape) == 2:
+        return clahe.apply(img)
+    else:
+        # Convert to LAB to apply CLAHE on Lightness channel
+        lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
+        l, a, b = cv2.split(lab)
+        l2 = clahe.apply(l)
+        lab = cv2.merge((l2, a, b))
+        return cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
 
-def get_data_generators():
-    # 5. ADD MORE ADVANCED AUGMENTATION
-    train_datagen = ImageDataGenerator(
-        rescale=1./255,
-        rotation_range=20, # RandomRotation(0.2)
-        zoom_range=0.2,    # RandomZoom(0.2)
-        width_shift_range=0.2, # RandomTranslation
-        height_shift_range=0.2,
-        shear_range=0.15,
-        horizontal_flip=True,
-        brightness_range=[0.8, 1.2], # RandomContrast(0.2)
-        fill_mode='nearest',
-        validation_split=0.2
-    )
+def medical_preprocessing(img):
+    """Custom preprocessing for Medical X-Rays."""
+    # 1. CLAHE Enhancement
+    img = apply_clahe(img)
+    # 2. Normalization
+    img = img.astype('float32') / 255.0
+    return img
 
-    test_datagen = ImageDataGenerator(rescale=1./255)
+from tensorflow.keras.applications import MobileNetV3Small
 
-    train_generator = train_datagen.flow_from_directory(
-        DATASET_DIR,
-        target_size=(IMG_SIZE, IMG_SIZE),
+def get_fast_dataset():
+    # Use modern tf.data pipeline for maximum CPU throughput
+    train_ds = tf.keras.utils.image_dataset_from_directory(
+        TRAIN_DIR,
+        image_size=(IMG_SIZE, IMG_SIZE),
         batch_size=BATCH_SIZE,
-        class_mode='categorical',
-        classes=CLASS_NAMES,
-        subset='training'
+        label_mode='categorical',
+        class_names=CLASS_NAMES,
+        shuffle=True
     )
 
-    val_generator = train_datagen.flow_from_directory(
-        DATASET_DIR,
-        target_size=(IMG_SIZE, IMG_SIZE),
+    val_ds = tf.keras.utils.image_dataset_from_directory(
+        TEST_DIR,
+        image_size=(IMG_SIZE, IMG_SIZE),
         batch_size=BATCH_SIZE,
-        class_mode='categorical',
-        classes=CLASS_NAMES,
-        subset='validation'
+        label_mode='categorical',
+        class_names=CLASS_NAMES,
+        shuffle=False
     )
 
-    return train_generator, val_generator
+    # Apply medical enhancement and prefetching
+    def preprocess(image, label):
+        # Image is already resized by image_dataset_from_directory
+        image = tf.cast(image, tf.float32) / 255.0
+        return image, label
 
-def calculate_class_weights(train_generator):
-    # 4. USE CLASS WEIGHTS
-    print("\n--- 10. DISPLAY CLASS DISTRIBUTION ---")
-    labels = train_generator.classes
-    class_indices = train_generator.class_indices
-    unique, counts = np.unique(labels, return_counts=True)
-    
-    for i, count in zip(unique, counts):
-        print(f"{CLASS_NAMES[i]}: {count} images")
+    # Map preprocessing and enable Autotune Prefetching
+    AUTOTUNE = tf.data.AUTOTUNE
+    train_ds = train_ds.map(preprocess, num_parallel_calls=AUTOTUNE).cache().prefetch(buffer_size=AUTOTUNE)
+    val_ds = val_ds.map(preprocess, num_parallel_calls=AUTOTUNE).cache().prefetch(buffer_size=AUTOTUNE)
 
-    weights = class_weight.compute_class_weight(
-        class_weight='balanced',
-        classes=np.unique(labels),
-        y=labels
-    )
-    return dict(enumerate(weights))
+    return train_ds, val_ds
 
-def build_advanced_model(num_classes):
-    # 1. USE A STRONGER MODEL (EfficientNetB3)
-    base_model = EfficientNetB3(weights='imagenet', include_top=False, input_shape=(IMG_SIZE, IMG_SIZE, 3))
+def build_highly_accurate_model(num_classes):
+    print(f"\n--- Building Supersonic MobileNetV3 Backbone ({IMG_SIZE}x{IMG_SIZE}) ---")
+    base_model = MobileNetV3Small(weights='imagenet', include_top=False, input_shape=(IMG_SIZE, IMG_SIZE, 3))
     base_model.trainable = False
 
     x = base_model.output
-    x = GlobalAveragePooling2D()(x)
+    x = Concatenate()([GlobalAveragePooling2D()(x), GlobalMaxPooling2D()(x)])
     
-    # 6. ADD BATCH NORMALIZATION
     x = BatchNormalization()(x)
-    x = Dense(1024, activation='relu')(x)
+    x = Dense(512, activation='swish')(x) # Streamlined for CPU speed
     x = BatchNormalization()(x)
-    x = Dropout(0.5)(x)
+    x = Dropout(0.3)(x)
     
-    x = Dense(512, activation='relu')(x)
+    predictions = Dense(num_classes, activation='softmax')(x)
+
+    model = Model(inputs=base_model.input, outputs=predictions)
+    model.compile(optimizer=Adam(1e-3), loss='categorical_crossentropy', metrics=['accuracy'])
+    return model, base_model
+    
+    # Deep Diagnostic Neck
+    x = BatchNormalization()(x)
+    x = Dense(1024, activation='swish')(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.4)(x)
+    
+    x = Dense(512, activation='swish')(x)
     x = BatchNormalization()(x)
     x = Dropout(0.3)(x)
     
@@ -129,69 +120,56 @@ def build_advanced_model(num_classes):
     model.compile(optimizer=Adam(1e-3), loss='categorical_crossentropy', metrics=['accuracy'])
     return model, base_model
 
-def evaluate_model(model, val_generator):
-    # 11. GENERATE CONFUSION MATRIX & REPORT
-    print("\n--- 11. GENERATE CONFUSION MATRIX ---")
-    val_generator.reset()
-    Y_pred = model.predict(val_generator)
-    y_pred = np.argmax(Y_pred, axis=1)
-    y_true = val_generator.classes
-
-    # Classification Report
-    print(classification_report(y_true, y_pred, target_names=CLASS_NAMES))
+def train_ultra_accurate():
+    print(f"Training data  : {TRAIN_DIR}")
+    print(f"Validation data: {TEST_DIR}")
     
-    # Confusion Matrix
-    cm = confusion_matrix(y_true, y_pred)
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(cm, annot=True, fmt='d', xticklabels=CLASS_NAMES, yticklabels=CLASS_NAMES, cmap='Blues')
-    plt.title('V2 Advanced Confusion Matrix (Normal vs TB focus)')
-    plt.ylabel('Actual')
-    plt.xlabel('Predicted')
-    plt.savefig('confusion_matrix_v2.png')
-    print("Confusion matrix saved as confusion_matrix_v2.png")
-
-def train_v2():
-    verify_dataset_quality()
-    train_gen, val_gen = get_data_generators()
-    class_weights = calculate_class_weights(train_gen)
+    train_ds, val_ds = get_fast_dataset()
     
-    model, base_model = build_advanced_model(len(CLASS_NAMES))
+    model, base_model = build_highly_accurate_model(len(CLASS_NAMES))
 
-    # 3. & 7. Callbacks
     callbacks = [
-        EarlyStopping(patience=7, restore_best_weights=True, monitor='val_accuracy'),
-        ModelCheckpoint(MODEL_SAVE_PATH, save_best_only=True, monitor='val_accuracy'),
-        ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=3, min_lr=1e-8)
+        EarlyStopping(patience=7, restore_best_weights=True, monitor='val_accuracy', verbose=1),
+        ModelCheckpoint(MODEL_SAVE_PATH, save_best_only=True, monitor='val_accuracy', verbose=1),
+        ReduceLROnPlateau(monitor='val_loss', factor=0.3, patience=3, min_lr=1e-7, verbose=1)
     ]
 
-    print("\n--- Phase 1: Transfer Learning (EfficientNetB3) ---")
+    print("\n========================================")
+    print("Phase 1: Training classification head")
+    print("========================================")
     model.fit(
-        train_gen,
+        train_ds,
         epochs=15,
-        validation_data=val_gen,
-        class_weight=class_weights,
+        validation_data=val_ds,
         callbacks=callbacks
     )
 
-    # 8. IMPROVE FINE-TUNING
-    print("\n--- Phase 2: Ultra Fine-Tuning (Unfreeze Entire Network) ---")
+    print("\n========================================")
+    print("Phase 2: Fine-tuning Diagnostic Layers")
+    print("========================================")
     base_model.trainable = True
-    # Freeze only very earliest layers
-    for layer in base_model.layers[:50]:
+    # Freeze everything except the top 40 layers for CPU speed
+    for layer in base_model.layers[:-40]:
         layer.trainable = False
         
-    model.compile(optimizer=Adam(1e-6), loss='categorical_crossentropy', metrics=['accuracy'])
+    model.compile(optimizer=Adam(1e-5), loss='categorical_crossentropy', metrics=['accuracy'])
     
-    history = model.fit(
-        train_gen,
+    model.fit(
+        train_ds,
         epochs=EPOCHS,
-        validation_data=val_gen,
-        class_weight=class_weights,
+        validation_data=val_ds,
         callbacks=callbacks
     )
 
-    print("\n--- Training Complete ---")
-    evaluate_model(model, val_gen)
+    print("\n========================================")
+    print("Final Model Verification")
+    print("========================================")
+    val_loss, val_acc = model.evaluate(val_ds)
+    print(f"Final System Accuracy: {val_acc*100:.2f}%")
+    print(f"Model saved as {MODEL_SAVE_PATH}")
+    
+    with open("training_done.txt", "w") as f:
+        f.write(f"Accuracy: {val_acc*100:.2f}%")
 
 if __name__ == "__main__":
-    train_v2()
+    train_ultra_accurate()
